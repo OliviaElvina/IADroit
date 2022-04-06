@@ -1,8 +1,9 @@
-from extract import *
+# from extract import *
 
 import numpy as np
 import pandas as pd
 from collections import defaultdict
+import random
 
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -18,7 +19,7 @@ from sklearn.pipeline import make_pipeline
 from lime.lime_text import LimeTextExplainer
 
 
-#prépare la dataset en la splittant en train et test et en la vectorisant
+#prepare la dataset en la splittant en train et test et en la vectorisant
 def prepareDataset(dataSet):
 
     #division en train/test
@@ -30,7 +31,7 @@ def prepareDataset(dataSet):
         stratify=dataSet["label"])
 
 
-    #on vectorise les données d'entrée
+    #on vectorise les donnees d'entree
     if args.vector == "tfidf":
         vectorizer = TfidfVectorizer(ngram_range=(1,args.nGram))
     else:
@@ -44,10 +45,10 @@ def prepareDataset(dataSet):
 
 
 
-#permet de trouver les meilleurs paramètres des modèles choisis
+#permet de trouver les meilleurs parametres des modeles choisis
 def crossVal(dataSet, nameModels, modelsEval, train_vectors, train_y):
 
-    models = []
+    models = modelsEval.copy()
 
     param_grid_models = [
         {'alpha': np.logspace(0,5,6)},
@@ -55,29 +56,40 @@ def crossVal(dataSet, nameModels, modelsEval, train_vectors, train_y):
         {"kernel" : ["linear", "rbf", "sigmoid"], "C" : np.logspace(-1,1,3)}
     ]
 
-    for name, model, param in zip(nameModels, modelsEval, param_grid_models):
+    if args.model == "all":
+
+        for name, model, param in zip(nameModels, modelsEval, param_grid_models):
+            grid = GridSearchCV(model, param, cv = 5)
+            grid.fit(train_vectors, train_y)
+            models[nameModels.index(name)] = grid.best_estimator_
+
+
+    elif args.model in ["Bayes", "KNN", "SVM"]:
+        model = modelsEval[nameModels.index(args.model)]
+        param = param_grid_models[nameModels.index(args.model)]
         grid = GridSearchCV(model, param, cv = 5)
         grid.fit(train_vectors, train_y)
-        models.append(grid.best_estimator_)
+        models[nameModels.index(args.model)] = grid.best_estimator_
 
     return models
 
 
 
-#permet de donner les métriques d'un modèle
+#permet de donner les metriques d'un modele
 def evaluate(pred, y):
 
     macroF1 = metrics.f1_score(y, pred, average = "macro")
     microF1 = metrics.f1_score(y, pred, average = "micro")
     F1weighted = metrics.f1_score(y, pred, average = "weighted")
     acc = metrics.accuracy_score(y, pred)
+    F1 = metrics.f1_score(y, pred, average = None)
 
-    return macroF1, microF1, F1weighted, acc
+    return macroF1, microF1, F1weighted, acc, F1
 
 
 
 
-#permet de lancer les différents modèles et de les évaluer => retourne un dataFrame panda avec les résultats
+#permet de lancer les differents modeles et de les evaluer => retourne un dataFrame panda avec les resultats
 def runModel(dataSet, nameModels, models, train_vectors, train_y, test_vectors, test_y):
 
     dicPredictTest = defaultdict(list)
@@ -85,40 +97,70 @@ def runModel(dataSet, nameModels, models, train_vectors, train_y, test_vectors, 
     dicResults = defaultdict(list)
 
 
-    for name, model in zip(nameModels, models):
+    if args.model == "all":
+
+        for name, model in zip(nameModels, models):
+            model.fit(train_vectors, train_y)
+            dicPredictTrain[name] = model.predict(train_vectors)
+            dicPredictTest[name] = model.predict(test_vectors)
+
+
+        for name in nameModels:
+            trainMacroF1, trainMicroF1, trainF1weighted, trainAcc, trainF1 = evaluate(dicPredictTrain[name], train_y)
+            testMacroF1, testMicroF1, testF1weighted, testAcc, testF1 = evaluate(dicPredictTest[name], test_y)
+            tempF1 = []
+            for valeur in testF1:
+                tempF1.append(round(valeur, 3))
+
+            dicResults[name] = {
+                "Macro-F1 Train": round(trainMacroF1, 3),
+                "Micro-F1 Train" : round(trainMicroF1, 3),
+                "F1-weighted Train" : round(trainF1weighted, 3),
+                "Accuracy Train" : round(trainAcc, 3),
+                "Macro-F1 Test": round(testMacroF1, 3),
+                "Micro-F1 Test" : round(testMicroF1, 3),
+                "F1-weighted Test" : round(testF1weighted, 3),
+                "Accuracy Test" : round(testAcc,3),
+                "F1 Test" : tempF1
+                }
+
+        results = pd.DataFrame(data=dicResults)
+        # pd.set_option('display.max_columns', None)
+        results.to_excel("C:/Users/olivi/OneDrive/Bureau/Baseline/Resultats/"+args.feature+"_"+args.vector+"_"+str(args.nGram)+".xlsx", encoding="utf-8")
+
+    else:
+        model = models[nameModels.index(args.model)]
         model.fit(train_vectors, train_y)
-        dicPredictTrain[name] = model.predict(train_vectors)
-        dicPredictTest[name] = model.predict(test_vectors)
+        predictTrain = model.predict(train_vectors)
+        predictTest = model.predict(test_vectors)
 
+        trainMacroF1, trainMicroF1, trainF1weighted, trainAcc, trainF1 = evaluate(predictTrain, train_y)
+        testMacroF1, testMicroF1, testF1weighted, testAcc, testF1 = evaluate(predictTest, test_y)
 
-    for name in nameModels:
-        trainMacroF1, trainMicroF1, trainF1weighted, trainAcc = evaluate(dicPredictTrain[name], train_y)
-        testMacroF1, testMicroF1, testF1weighted, testAcc = evaluate(dicPredictTest[name], test_y)
-        dicResults[name] = {
-            "Macro-F1 Train": trainMacroF1,
-            "Micro-F1 Train" : trainMicroF1,
-            "F1-weighted Train" : trainF1weighted,
-            "Accuracy Train" : trainAcc,
-            "Macro-F1 Test": testMacroF1,
-            "Micro-F1 Test" : testMicroF1,
-            "F1-weighted Test" : testF1weighted,
-            "Accuracy Test" : testAcc
+        tempF1 = []
+        for valeur in testF1:
+            tempF1.append(round(valeur, 3))
+
+        dicResults[args.model] = {
+            "Macro-F1 Train": round(trainMacroF1, 3),
+            "Micro-F1 Train" : round(trainMicroF1, 3),
+            "F1-weighted Train" : round(trainF1weighted, 3),
+            "Accuracy Train" : round(trainAcc, 3),
+            "Macro-F1 Test": round(testMacroF1, 3),
+            "Micro-F1 Test" : round(testMicroF1, 3),
+            "F1-weighted Test" : round(testF1weighted, 3),
+            "Accuracy Test" : round(testAcc,3),
+            "F1 Test" : tempF1
             }
 
-
-    if args.model == "all":
-        results = pd.DataFrame(data=dicResults)
-        # results.to_excel("resultats.xlsx", encoding="utf-8")
-        # results.to_csv("resultats.csv")
-    else:
-        results = dicResults[args.model]
+        results = dicResults
 
 
     return results
 
 
 
-#Interprétation d'un classificateur
+#Interpretation d'un classificateur
 def interpret(test_X, train_y, test_y, model, nameModel, vectorizer):
 
     pipe = make_pipeline(vectorizer, model)
@@ -126,14 +168,16 @@ def interpret(test_X, train_y, test_y, model, nameModel, vectorizer):
     explainer = LimeTextExplainer(class_names=class_names)
     dicInterpret = defaultdict(list)
 
-    for idx in range(10):
+    alea = [random.randint(0, 100) for x in range(5)]
+
+    for idx in alea:
         exp = explainer.explain_instance(list(test_X)[idx], pipe.predict_proba, num_features=20)
         dicInterpret["Document "+str(idx)] = {
-            "Proba : " : pipe.predict_proba([list(test_X)[idx]]),
+            # "Proba : " : pipe.predict_proba([list(test_X)[idx]]),
             "True class : " : list(test_y)[idx],
-            "Features prédictives : " : exp.as_list()
+            "Features predictives : " : exp.as_list()
         }
-        exp.save_to_file(".\Interpretation\\"+nameModel+"_Document "+str(idx)+".html")
+        exp.save_to_file(".\Interpretation\\"+nameModel+"_"+args.feature+"_"+args.vector+"_"+str(args.nGram)+"_Document "+str(idx)+"_"+list(test_y)[idx]+"_"+".html")
 
     interpretResults = pd.DataFrame(data=dicInterpret)
 
@@ -141,36 +185,36 @@ def interpret(test_X, train_y, test_y, model, nameModel, vectorizer):
 
 
 
-#fonction principale appelée dans la partie main
+#fonction principale appelee dans la partie main
 def main():
 
 
-    #listes des noms des modèles et des modèles associés
+    #listes des noms des modeles et des modeles associes
     nameModels = [
         "Bayes",
-        # "KNN",
-        # "SVM"
+        "KNN",
+        "SVM"
     ]
 
     modelsEval = [
         naive_bayes.MultinomialNB(),
-        # KNeighborsClassifier(),
-        # SVC()
+        KNeighborsClassifier(),
+        SVC()
     ]
 
 
     #on charge la dataset
     dataSet = pd.read_csv('data.csv', sep="\t")
 
-    #Répartition de la dataset
-    print("Répartition des labels : \n")
-    print(dataSet["label"].value_counts(normalize=True))
-    print("\n")
+    #Repartition de la dataset
+    # print("Repartition des labels : \n")
+    # print(dataSet["label"].value_counts(normalize=True))
+    # print("\n")
 
 
     train_X, test_X, train_vectors, test_vectors, train_y, test_y, vectorizer = prepareDataset(dataSet)
 
-    #On choisit les meilleurs paramètres pour chaque modè
+    #On choisit les meilleurs parametres pour chaque mode
     models = crossVal(dataSet, nameModels, modelsEval, train_vectors, train_y)
 
     #Ajout du MLP sur lequel on ne peut pas faire de GridSearchCV
@@ -183,20 +227,17 @@ def main():
 
 
     results = runModel(dataSet, nameModels, models, train_vectors, train_y, test_vectors, test_y)
-    print("Métriques des différents modèles : \n")
+    print("Metriques des differents modeles : \n")
+    # pd.set_option('display.max_columns', None)
     print(results)
-
+    print(models)
 
     if args.sortie == "interpret":
         if args.modelInterpret == "SVM":
-            print("Interprétation Lime impossible avec SVM")
+            print("Interpretation Lime impossible avec SVM")
         else:
             interpretResults = interpret(test_X, train_y, test_y, models[nameModels.index(args.modelInterpret)], args.modelInterpret, vectorizer)
             print(interpretResults)
-
-
-
-
 
 
 
@@ -205,12 +246,12 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("model", choices = ["all", "Bayes", "KNN", "SVM", "MLP", "Dummy"], help="Choix du modèle")
-    parser.add_argument("feature", choices = ["all", "faits", "motifs", "jugement", "faits_motifs", "motifs_jugement"], help = "Choix de la partie du texte sur laquelle appliquer le modèle")
-    parser.add_argument("vector", choices = ["tfidf", "CountVect"], help = "Choix de la méthode de vectorisation")
+    parser.add_argument("model", choices = ["all", "Bayes", "KNN", "SVM", "MLP", "Dummy", "RandomForest"], help="Choix du modele")
+    parser.add_argument("feature", choices = ["all", "faits", "motifs", "jugement", "faits_motifs", "motifs_jugement"], help = "Choix de la partie du texte sur laquelle appliquer le modele")
+    parser.add_argument("vector", choices = ["tfidf", "CountVect"], help = "Choix de la methode de vectorisation")
     parser.add_argument("nGram", choices = np.arange(1,7), type=int, help = "Choix du ngram_range")
-    parser.add_argument("-s", "--sortie", choices = ["interpret"], help = "Choix de sortir l'interprétation avec Lime")
-    parser.add_argument("-mI", "--modelInterpret", choices = ["Bayes", "KNN", "SVM", "MLP", "Dummy"])
+    parser.add_argument("-s", "--sortie", choices = ["interpret"], help = "Choix de sortir l'interpretation avec Lime")
+    parser.add_argument("-mI", "--modelInterpret", choices = ["Bayes", "KNN", "SVM", "MLP", "Dummy", "RandomForest"])
     args = parser.parse_args()
 
     main()
